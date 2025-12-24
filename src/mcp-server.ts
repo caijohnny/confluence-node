@@ -433,6 +433,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "可选：父页面 ID，用于创建子页面",
             },
+            parentTitle: {
+              type: "string",
+              description: "可选：父页面标题（在同一个 space 下查找并解析出 parentId，用于创建子页面）",
+            },
+            atRoot: {
+              type: "boolean",
+              description: "可选：是否创建在 Space 根目录（true/false）。不指定父页面时会先追问确认。",
+              default: false,
+            },
           },
           required: ["title"],
         },
@@ -488,6 +497,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             parentId: {
               type: "string",
               description: "可选：父页面 ID（仅在创建新页面时使用）",
+            },
+            parentTitle: {
+              type: "string",
+              description: "可选：父页面标题（仅在创建新页面时使用；会在同一个 space 下查找并解析出 parentId）",
+            },
+            atRoot: {
+              type: "boolean",
+              description: "可选：是否创建在 Space 根目录（true/false）。不指定父页面时会先追问确认。",
+              default: false,
             },
           },
           required: ["title"],
@@ -661,6 +679,8 @@ type CallToolArgs = Record<string, unknown> & {
   pageId?: string;
   content?: string;
   parentId?: string;
+  parentTitle?: string;
+  atRoot?: boolean;
   query?: string;
   limit?: number;
   newTitle?: string;
@@ -687,6 +707,44 @@ type CallToolRequest = {
   params: CallToolRequestParams;
 };
 
+async function resolveParentIdForCreate({
+  space,
+  parentId,
+  parentTitle,
+  atRoot,
+}: {
+  space: string;
+  parentId?: string;
+  parentTitle?: string;
+  atRoot?: boolean;
+}): Promise<{ parentId: string | null; prompt?: never } | { parentId?: never; prompt: string }> {
+  if (atRoot === true) {
+    return { parentId: null };
+  }
+
+  if (parentId) {
+    return { parentId };
+  }
+
+  if (parentTitle) {
+    const parent = await getPage(space, parentTitle);
+    if (!parent) {
+      throw new Error(`未找到父页面: ${parentTitle}（space=${space}）`);
+    }
+    return { parentId: parent.id };
+  }
+
+  return {
+    prompt:
+      "创建页面前需要确认“要创建到哪个父页面下”。\n\n" +
+      "请你回复以下任意一种信息，然后我会把页面创建到该父页面之下：\n" +
+      "1) 父页面 ID（推荐）：直接告诉我 parentId\n" +
+      "2) 父页面标题：告诉我 parentTitle（我会在同一个 space 下用标题查找并解析出 parentId）\n" +
+      "3) 如果你就是要创建在 Space 根目录：请明确传 atRoot=true\n\n" +
+      "小提示：如果你不确定父页面，可以先用 confluence_search_pages 搜索父页面标题拿到 id。",
+  };
+}
+
 // 处理工具调用
 server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
   const { name, arguments: argsRaw } = request.params;
@@ -710,11 +768,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const space = (args.space as string | undefined) || CONF_SPACE;
         const content = args.content as string | undefined;
 
+        if (!space) {
+          throw new Error("必须提供 space（或在环境变量中配置 CONF_SPACE）");
+        }
+
+        const parentResolve = await resolveParentIdForCreate({
+          space,
+          parentId: (args.parentId as string | undefined) ?? undefined,
+          parentTitle: (args.parentTitle as string | undefined) ?? undefined,
+          atRoot: (args.atRoot as boolean | undefined) ?? undefined,
+        });
+
+        if ("prompt" in parentResolve) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: parentResolve.prompt,
+              },
+            ],
+          };
+        }
+
         if (!content) {
           throw new Error("必须提供 content");
         }
 
-        const result = await createPage(space ?? "", args.title as string, content, (args.parentId as string) ?? null);
+        const result = await createPage(space, args.title as string, content, parentResolve.parentId);
 
         return {
           content: [
@@ -756,11 +836,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const space = (args.space as string | undefined) || CONF_SPACE;
         const content = args.content as string | undefined;
 
+        if (!space) {
+          throw new Error("必须提供 space（或在环境变量中配置 CONF_SPACE）");
+        }
+
         if (!content) {
           throw new Error("必须提供 content");
         }
 
-        const existingPage = await getPage(space ?? "", args.title as string);
+        const existingPage = await getPage(space, args.title as string);
 
         let result: ConfluencePage;
         if (existingPage) {
@@ -775,7 +859,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           };
         }
 
-        result = await createPage(space ?? "", args.title as string, content, (args.parentId as string) ?? null);
+        const parentResolve = await resolveParentIdForCreate({
+          space,
+          parentId: (args.parentId as string | undefined) ?? undefined,
+          parentTitle: (args.parentTitle as string | undefined) ?? undefined,
+          atRoot: (args.atRoot as boolean | undefined) ?? undefined,
+        });
+
+        if ("prompt" in parentResolve) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: parentResolve.prompt,
+              },
+            ],
+          };
+        }
+
+        result = await createPage(space, args.title as string, content, parentResolve.parentId);
         return {
           content: [
             {
