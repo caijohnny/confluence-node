@@ -50,6 +50,9 @@ const api = axios.create({
     "Content-Type": "application/json",
     ...authConfig.headers,
   },
+  // 允许大内容的请求，解决更新文档内容过长时失败的问题
+  maxContentLength: Infinity,
+  maxBodyLength: Infinity,
 });
 
 type ConfluencePage = {
