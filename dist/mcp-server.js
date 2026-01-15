@@ -348,6 +348,76 @@ async function addCommentToPage({ pageId, commentHtml, parentCommentId, }) {
         throw new Error(`添加评论失败: ${message}`);
     }
 }
+/**
+ * 获取页面的附件列表
+ */
+async function getPageAttachments(pageId, limit = 100) {
+    try {
+        const res = await api.get(`/content/${pageId}/child/attachment`, {
+            params: {
+                limit,
+                expand: "metadata.mediaType",
+            },
+        });
+        return res.data.results;
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`获取页面附件列表失败: ${message}`);
+    }
+}
+/**
+ * 下载附件内容
+ */
+async function downloadAttachment(downloadPath) {
+    if (!CONF_BASE_URL)
+        throw new Error("缺少环境变量 CONF_BASE_URL");
+    // downloadPath 可能是相对路径（如 /download/attachments/...）或绝对路径
+    const url = downloadPath.startsWith("http") ? downloadPath : `${CONF_BASE_URL}${downloadPath}`;
+    const res = await fetch(url, {
+        method: "GET",
+        headers: {
+            Authorization: getAuthHeader(),
+        },
+    });
+    if (!res.ok) {
+        throw new Error(`下载附件失败: HTTP ${res.status} ${res.statusText}`);
+    }
+    return await res.arrayBuffer();
+}
+/**
+ * 复制页面的所有附件到目标页面
+ */
+async function copyPageAttachments(sourcePageId, targetPageId) {
+    const attachments = await getPageAttachments(sourcePageId);
+    const results = [];
+    for (const attachment of attachments) {
+        try {
+            if (!attachment._links.download) {
+                results.push({ name: attachment.title, success: false, error: "无下载链接" });
+                continue;
+            }
+            // 下载附件
+            const content = await downloadAttachment(attachment._links.download);
+            // 上传到目标页面
+            await uploadAttachmentToPage({
+                pageId: targetPageId,
+                fileName: attachment.title,
+                fileArrayBuffer: content,
+            });
+            results.push({ name: attachment.title, success: true });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            results.push({ name: attachment.title, success: false, error: message });
+        }
+    }
+    return {
+        success: results.filter((r) => r.success).length,
+        failed: results.filter((r) => !r.success).length,
+        details: results,
+    };
+}
 async function uploadAttachmentToPage({ pageId, fileName, fileArrayBuffer, comment, }) {
     if (!CONF_BASE_URL)
         throw new Error("缺少环境变量 CONF_BASE_URL");
@@ -849,6 +919,65 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     required: ["username"],
                 },
             },
+            {
+                name: "confluence_get_page_attachments",
+                description: "获取指定 Confluence (KMS) 页面的所有附件列表。KMS 是公司内部 Confluence 系统的别名。",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        pageId: {
+                            type: "string",
+                            description: "页面 ID",
+                        },
+                        limit: {
+                            type: "number",
+                            description: "返回结果数量限制",
+                            default: 100,
+                        },
+                    },
+                    required: ["pageId"],
+                },
+            },
+            {
+                name: "confluence_copy_page",
+                description: "复制 Confluence (KMS) 页面到新位置。支持复制页面内容和附件。KMS 是公司内部 Confluence 系统的别名。",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        sourcePageId: {
+                            type: "string",
+                            description: "源页面 ID（要复制的页面）",
+                        },
+                        targetSpace: {
+                            type: "string",
+                            description: "目标 Space Key（如果不提供则使用源页面的 Space）",
+                        },
+                        newTitle: {
+                            type: "string",
+                            description: "新页面标题",
+                        },
+                        parentId: {
+                            type: "string",
+                            description: "可选：新页面的父页面 ID",
+                        },
+                        parentTitle: {
+                            type: "string",
+                            description: "可选：新页面的父页面标题（会自动查找 ID）",
+                        },
+                        atRoot: {
+                            type: "boolean",
+                            description: "可选：是否创建在 Space 根目录",
+                            default: false,
+                        },
+                        copyAttachments: {
+                            type: "boolean",
+                            description: "是否复制附件（默认为 true）",
+                            default: true,
+                        },
+                    },
+                    required: ["sourcePageId", "newTitle"],
+                },
+            },
         ],
     };
 });
@@ -1235,6 +1364,85 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                             text: comments.length > 0
                                 ? `共找到 ${comments.length} 条 ${args.username} 的评论：\n\n${JSON.stringify(formatted, null, 2)}`
                                 : `未找到用户 ${args.username} 的评论`,
+                        },
+                    ],
+                };
+            }
+            case "confluence_get_page_attachments": {
+                if (!args.pageId)
+                    throw new Error("必须提供 pageId");
+                const attachments = await getPageAttachments(String(args.pageId), args.limit || 100);
+                const formatted = attachments.map((a) => ({
+                    id: a.id,
+                    title: a.title,
+                    mediaType: a.mediaType,
+                    fileSize: a.fileSize,
+                    download: a._links.download ? `${CONF_BASE_URL}${a._links.download}` : undefined,
+                    webui: a._links.webui ? `${CONF_BASE_URL}${a._links.webui}` : undefined,
+                }));
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: attachments.length > 0
+                                ? `共找到 ${attachments.length} 个附件：\n\n${JSON.stringify(formatted, null, 2)}`
+                                : "该页面暂无附件",
+                        },
+                    ],
+                };
+            }
+            case "confluence_copy_page": {
+                if (!args.sourcePageId)
+                    throw new Error("必须提供 sourcePageId");
+                if (!args.newTitle)
+                    throw new Error("必须提供 newTitle");
+                // 获取源页面信息
+                const sourcePage = await getPageById(String(args.sourcePageId));
+                const targetSpace = args.targetSpace || sourcePage.space.key;
+                const copyAttachments = args.copyAttachments !== false; // 默认为 true
+                // 解析父页面
+                const parentResolve = await resolveParentIdForCreate({
+                    space: targetSpace,
+                    parentId: args.parentId ?? undefined,
+                    parentTitle: args.parentTitle ?? undefined,
+                    atRoot: args.atRoot ?? undefined,
+                });
+                if ("prompt" in parentResolve) {
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: parentResolve.prompt,
+                            },
+                        ],
+                    };
+                }
+                // 创建新页面（复制内容）
+                const content = sourcePage.body?.storage?.value || "";
+                const newPage = await createPage(targetSpace, String(args.newTitle), content, parentResolve.parentId);
+                let attachmentResult = { success: 0, failed: 0, details: [] };
+                // 复制附件
+                if (copyAttachments) {
+                    attachmentResult = await copyPageAttachments(String(args.sourcePageId), newPage.id);
+                }
+                const attachmentMsg = copyAttachments
+                    ? `\n附件复制：成功 ${attachmentResult.success} 个，失败 ${attachmentResult.failed} 个` +
+                        (attachmentResult.failed > 0
+                            ? `\n失败详情：${attachmentResult.details
+                                .filter((d) => !d.success)
+                                .map((d) => `${d.name}: ${d.error}`)
+                                .join("; ")}`
+                            : "")
+                    : "\n附件复制：已跳过";
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `✅ 页面复制成功！\n\n` +
+                                `源页面: ${sourcePage.title} (ID: ${sourcePage.id})\n` +
+                                `新页面: ${newPage.title} (ID: ${newPage.id})\n` +
+                                `URL: ${CONF_BASE_URL}${newPage._links.webui}` +
+                                attachmentMsg,
                         },
                     ],
                 };
