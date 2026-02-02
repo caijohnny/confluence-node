@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
 import dotenv from "dotenv";
+import express from "express";
+import { createServer } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 dotenv.config();
 const { CONF_BASE_URL, CONF_USERNAME, CONF_PASSWORD, CONF_SPACE, CONF_TOKEN } = process.env;
 // 判断是否使用 PAT (Personal Access Token) 认证
@@ -543,17 +547,161 @@ function buildCodeMacro({ code, language, linenumbers = false, collapse = false,
         `<ac:plain-text-body><![CDATA[${safeCode}]]></ac:plain-text-body>` +
         `</ac:structured-macro>`);
 }
-// ===== MCP Server 实现 =====
-const server = new Server({
-    name: "confluence-kms-mcp-server",
-    version: "1.0.0",
-}, {
-    capabilities: {
-        tools: {},
-    },
-});
-// 列出所有工具
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+async function resolveParentIdForCreate({ space, parentId, parentTitle, atRoot, }) {
+    if (atRoot === true) {
+        return { parentId: null };
+    }
+    if (parentId) {
+        return { parentId };
+    }
+    if (parentTitle) {
+        const parent = await getPage(space, parentTitle);
+        if (!parent) {
+            throw new Error(`未找到父页面: ${parentTitle}（space=${space}）`);
+        }
+        return { parentId: parent.id };
+    }
+    return {
+        prompt: "创建页面前需要确认“要创建到哪个父页面下”。\n\n" +
+            "请你回复以下任意一种信息，然后我会把页面创建到该父页面之下：\n" +
+            "1) 父页面 ID（推荐）：直接告诉我 parentId\n" +
+            "2) 父页面标题：告诉我 parentTitle（我会在同一个 space 下用标题查找并解析出 parentId）\n" +
+            "3) 如果你就是要创建在 Space 根目录：请明确传 atRoot=true\n\n" +
+            "小提示：如果你不确定父页面，可以先用 confluence_search_pages 搜索父页面标题拿到 id。",
+    };
+}
+// ===== 命令行参数解析 =====
+function parseArgs() {
+    const args = process.argv.slice(2);
+    let mode = "stdio";
+    let port = 3000;
+    for (const arg of args) {
+        if (arg === "--http" || arg === "-h") {
+            mode = "http";
+        }
+        else if (arg.startsWith("--port=")) {
+            port = parseInt(arg.split("=")[1], 10);
+            mode = "http"; // 指定端口时自动切换到 HTTP 模式
+        }
+        else if (arg === "--stdio" || arg === "-s") {
+            mode = "stdio";
+        }
+    }
+    return { mode, port };
+}
+// ===== 启动服务器 =====
+// 用于存储 HTTP 模式下的 transport 实例（按 sessionId 索引）
+const httpTransports = new Map();
+async function startHttpServer(port) {
+    const app = express();
+    // 解析 JSON 请求体
+    app.use(express.json());
+    // MCP 端点 - 处理所有 MCP 请求
+    app.all("/mcp", async (req, res) => {
+        // 获取或创建 session
+        const sessionId = req.headers["mcp-session-id"];
+        if (req.method === "GET") {
+            // GET 请求 - 建立 SSE 连接
+            // 对于 GET 请求，如果没有 sessionId，返回错误
+            if (!sessionId || !httpTransports.has(sessionId)) {
+                res.status(400).json({ error: "Missing or invalid session ID. Send a POST request first to initialize." });
+                return;
+            }
+            const transport = httpTransports.get(sessionId);
+            await transport.handleRequest(req, res);
+            return;
+        }
+        if (req.method === "POST") {
+            // POST 请求 - 处理 MCP 消息
+            if (sessionId && httpTransports.has(sessionId)) {
+                // 已有 session，复用 transport
+                const transport = httpTransports.get(sessionId);
+                await transport.handleRequest(req, res, req.body);
+                return;
+            }
+            // 新 session - 创建新的 transport 和 server
+            const transport = new StreamableHTTPServerTransport({
+                sessionIdGenerator: () => randomUUID(),
+            });
+            // 创建新的 server 实例并连接
+            const serverInstance = new Server({
+                name: "confluence-kms-mcp-server",
+                version: "1.0.0",
+            }, {
+                capabilities: {
+                    tools: {},
+                },
+            });
+            // 注册工具处理器（复用已定义的 handlers）
+            setupServerHandlers(serverInstance);
+            await serverInstance.connect(transport);
+            // 保存 transport
+            const newSessionId = transport.sessionId;
+            if (newSessionId) {
+                httpTransports.set(newSessionId, transport);
+                // 监听关闭事件，清理 transport
+                transport.onclose = () => {
+                    httpTransports.delete(newSessionId);
+                    console.error(`Session ${newSessionId} closed`);
+                };
+            }
+            // 处理请求
+            await transport.handleRequest(req, res, req.body);
+            return;
+        }
+        if (req.method === "DELETE") {
+            // DELETE 请求 - 关闭 session
+            if (sessionId && httpTransports.has(sessionId)) {
+                const transport = httpTransports.get(sessionId);
+                await transport.close();
+                httpTransports.delete(sessionId);
+                res.status(200).json({ message: "Session closed" });
+                return;
+            }
+            res.status(404).json({ error: "Session not found" });
+            return;
+        }
+        // 不支持的方法
+        res.status(405).json({ error: "Method not allowed" });
+    });
+    // 健康检查端点
+    app.get("/health", (_req, res) => {
+        res.json({ status: "ok", mode: "http", sessions: httpTransports.size });
+    });
+    // 启动 HTTP 服务器
+    const httpServer = createServer(app);
+    httpServer.listen(port, () => {
+        console.error(`Confluence (KMS) MCP Server 已启动 (HTTP 模式)`);
+        console.error(`  - MCP 端点: http://localhost:${port}/mcp`);
+        console.error(`  - 健康检查: http://localhost:${port}/health`);
+    });
+}
+async function startStdioServer() {
+    const transport = new StdioServerTransport();
+    // 创建 server 实例
+    const serverInstance = new Server({
+        name: "confluence-kms-mcp-server",
+        version: "1.0.0",
+    }, {
+        capabilities: {
+            tools: {},
+        },
+    });
+    setupServerHandlers(serverInstance);
+    await serverInstance.connect(transport);
+    console.error("Confluence (KMS) MCP Server 已启动 (stdio 模式)");
+}
+// 设置服务器的请求处理器
+function setupServerHandlers(serverInstance) {
+    // 列出所有工具
+    serverInstance.setRequestHandler(ListToolsRequestSchema, async () => {
+        return getToolsList();
+    });
+    // 处理工具调用
+    serverInstance.setRequestHandler(CallToolRequestSchema, handleToolCall);
+}
+// 获取工具列表（提取为函数以便复用）
+function getToolsList() {
     return {
         tools: [
             {
@@ -820,7 +968,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             {
                 name: "confluence_build_code_macro",
-                description: "生成 Confluence (KMS) 的代码宏（storage format HTML），用于安全插入代码块，避免“代码宏出错: InvalidValueException”。",
+                description: "生成 Confluence (KMS) 的代码宏（storage format HTML），用于安全插入代码块，避免 InvalidValueException 错误。",
                 inputSchema: {
                     type: "object",
                     properties: {
@@ -980,32 +1128,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
         ],
     };
-});
-async function resolveParentIdForCreate({ space, parentId, parentTitle, atRoot, }) {
-    if (atRoot === true) {
-        return { parentId: null };
-    }
-    if (parentId) {
-        return { parentId };
-    }
-    if (parentTitle) {
-        const parent = await getPage(space, parentTitle);
-        if (!parent) {
-            throw new Error(`未找到父页面: ${parentTitle}（space=${space}）`);
-        }
-        return { parentId: parent.id };
-    }
-    return {
-        prompt: "创建页面前需要确认“要创建到哪个父页面下”。\n\n" +
-            "请你回复以下任意一种信息，然后我会把页面创建到该父页面之下：\n" +
-            "1) 父页面 ID（推荐）：直接告诉我 parentId\n" +
-            "2) 父页面标题：告诉我 parentTitle（我会在同一个 space 下用标题查找并解析出 parentId）\n" +
-            "3) 如果你就是要创建在 Space 根目录：请明确传 atRoot=true\n\n" +
-            "小提示：如果你不确定父页面，可以先用 confluence_search_pages 搜索父页面标题拿到 id。",
-    };
 }
-// 处理工具调用
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+// 处理工具调用（提取为函数以便复用）
+async function handleToolCall(request) {
     const { name, arguments: argsRaw } = request.params;
     const args = (argsRaw ?? {});
     try {
@@ -1463,12 +1588,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true,
         };
     }
-});
-// 启动服务器
+}
 async function main() {
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Confluence (KMS) MCP Server 已启动");
+    const { mode, port } = parseArgs();
+    if (mode === "http") {
+        await startHttpServer(port);
+    }
+    else {
+        await startStdioServer();
+    }
 }
 main().catch((error) => {
     console.error("服务器错误:", error);

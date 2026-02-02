@@ -6,6 +6,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dev/index.js",
     "mcp": "npm run -s build && node dist/mcp-server.js",
+    "mcp:http": "npm run -s build && node dist/mcp-server.js --http",
+    "mcp:http:port": "npm run -s build && node dist/mcp-server.js --port=3000",
     "test": "node dev/test-connection.js"
   },
   "bin": {
@@ -15,11 +17,13 @@
     "dist"
   ],
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.25.1",
     "axios": "^1.6.0",
     "dotenv": "^16.4.0",
-    "@modelcontextprotocol/sdk": "^1.0.4"
+    "express": "^5.2.1"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2"
   }
