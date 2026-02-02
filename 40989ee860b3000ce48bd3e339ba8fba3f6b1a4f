@@ -1,0 +1,40 @@
+src/mcp-server.ts
+  debde6a01d26e700 9-10,13,812-942,944-975,1246,1412-1413,1931,1934-1940
+  121778243dbeabf7 5
+package.json
+  debde6a01d26e700 9-10
+  121778243dbeabf7 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.0.42",
+  "base_commit_sha": "40989ee860b3000ce48bd3e339ba8fba3f6b1a4f",
+  "prompts": {
+    "121778243dbeabf7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e09c125e-8569-4245-8e60-0ad8f4a5caa1",
+        "model": "claude-opus-4-5-20251101"
+      },
+      "human_author": "johntsai <johntsai@fanruan.com>",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 9,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    },
+    "debde6a01d26e700": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "572a3045-83a2-4ee0-8dab-9a9e9b717e55",
+        "model": "claude-opus-4-5-20251101"
+      },
+      "human_author": "johntsai <johntsai@fanruan.com>",
+      "messages": [],
+      "total_additions": 1136,
+      "total_deletions": 977,
+      "accepted_lines": 1133,
+      "overriden_lines": 0
+    }
+  }
+}
