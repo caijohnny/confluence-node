@@ -652,53 +652,111 @@ function escapeForCdata(text: unknown): string {
 }
 
 /**
- * Confluence Code Macro 支持的 language 值在不同版本/插件可能有差异。
+ * Confluence Code Macro 支持的 language 值（基于官方文档）。
  * 为了避免 InvalidValueException，这里做常见别名归一化；无法识别时直接不写 language 参数（最稳）。
+ *
+ * 官方支持：ActionScript, AppleScript, Bash, C#, C++, CSS, ColdFusion, Delphi,
+ * Diff, Erlang, Groovy, HTML and XML, Java, Java FX, JavaScript, PHP, Perl,
+ * Plain Text, PowerShell, Python, Ruby, SQL, Sass, Scala, Visual Basic, YAML
  */
 const CODE_LANGUAGE_ALIASES = new Map<string, string>([
+  // JavaScript
   ["js", "javascript"],
   ["jsx", "javascript"],
   ["node", "javascript"],
-  ["ts", "typescript"],
-  ["tsx", "typescript"],
+  // Bash / Shell
   ["sh", "bash"],
   ["shell", "bash"],
   ["zsh", "bash"],
+  // YAML
   ["yml", "yaml"],
+  // Python
   ["py", "python"],
-  ["golang", "go"],
+  // PowerShell
   ["ps", "powershell"],
+  ["ps1", "powershell"],
+  // C#
+  ["c#", "csharp"],
+  ["cs", "csharp"],
+  ["dotnet", "csharp"],
+  // C++
+  ["c++", "cpp"],
+  ["cc", "cpp"],
+  ["cxx", "cpp"],
+  // C → 归入 C++（Confluence 无独立 C）
+  ["c", "cpp"],
+  // HTML / XML
+  ["htm", "html"],
+  ["xhtml", "html"],
+  ["xsl", "xml"],
+  ["xslt", "xml"],
+  // Plain Text
+  ["text", "plain"],
+  ["plaintext", "plain"],
+  ["txt", "plain"],
+  ["none", "plain"],
+  // ActionScript
+  ["actionscript", "actionscript3"],
+  ["as", "actionscript3"],
+  ["as3", "actionscript3"],
+  // Visual Basic
+  ["visualbasic", "vb"],
+  ["vbnet", "vb"],
+  ["vb.net", "vb"],
+  ["vbs", "vb"],
+  ["vbscript", "vb"],
+  // Sass
+  ["scss", "sass"],
+  // TypeScript → 归入 JavaScript（Confluence 无独立 TypeScript）
+  ["ts", "javascript"],
+  ["tsx", "javascript"],
+  ["typescript", "javascript"],
+  // 常见但不支持的语言 → 归入 plain
+  ["go", "plain"],
+  ["golang", "plain"],
+  ["rust", "plain"],
+  ["rs", "plain"],
+  ["kotlin", "plain"],
+  ["kt", "plain"],
+  ["swift", "plain"],
+  ["lua", "plain"],
+  ["json", "plain"],
+  ["ini", "plain"],
+  ["toml", "plain"],
+  ["makefile", "plain"],
+  ["make", "plain"],
+  ["dockerfile", "plain"],
+  ["docker", "plain"],
+  ["objectivec", "plain"],
+  ["objc", "plain"],
 ]);
 
 const KNOWN_SAFE_CODE_LANGUAGES = new Set<string>([
+  "actionscript3",
+  "applescript",
   "bash",
-  "c",
+  "coldfusion",
   "cpp",
   "csharp",
   "css",
+  "delphi",
   "diff",
-  "go",
+  "erlang",
   "groovy",
   "html",
-  "ini",
   "java",
+  "javafx",
   "javascript",
-  "json",
-  "kotlin",
-  "lua",
-  "makefile",
-  "objectivec",
   "perl",
   "php",
-  "plaintext",
+  "plain",
   "powershell",
   "python",
   "ruby",
-  "rust",
+  "sass",
   "scala",
   "sql",
-  "swift",
-  "typescript",
+  "vb",
   "xml",
   "yaml",
 ]);
