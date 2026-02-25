@@ -129,7 +129,7 @@ async function createPage(
       space: { key: space },
       body: {
         storage: {
-          value: content,
+          value: sanitizeCodeMacros(content),
           representation: "storage",
         },
       },
@@ -158,7 +158,7 @@ async function updatePage(page: ConfluencePage, content: string, title: string |
       },
       body: {
         storage: {
-          value: content,
+          value: sanitizeCodeMacros(content),
           representation: "storage",
         },
       },
@@ -709,6 +709,34 @@ function normalizeCodeLanguage(language: unknown): string | null {
   if (!raw) return null;
   const normalized = CODE_LANGUAGE_ALIASES.get(raw) ?? raw;
   return KNOWN_SAFE_CODE_LANGUAGES.has(normalized) ? normalized : null;
+}
+
+/**
+ * 扫描 storage-format HTML 中的代码宏，将无效的 language 参数归一化或移除，
+ * 防止 Confluence 抛出 InvalidValueException。
+ *
+ * 在 createPage / updatePage 写入内容前自动调用。
+ */
+function sanitizeCodeMacros(html: string): string {
+  // 匹配 code 宏中的 language 参数：<ac:parameter ac:name="language">xxx</ac:parameter>
+  // 使用非贪婪匹配，限定在 <ac:structured-macro ac:name="code"> 上下文中
+  return html.replace(
+    /(<ac:structured-macro\s[^>]*ac:name="code"[^>]*>)([\s\S]*?)(<\/ac:structured-macro>)/g,
+    (_match, open: string, inner: string, close: string) => {
+      const sanitizedInner = inner.replace(
+        /<ac:parameter\s+ac:name="language">([\s\S]*?)<\/ac:parameter>/g,
+        (_paramMatch: string, langValue: string) => {
+          const normalized = normalizeCodeLanguage(langValue);
+          if (normalized) {
+            return `<ac:parameter ac:name="language">${normalized}</ac:parameter>`;
+          }
+          // 无法识别的 language 直接移除该参数，让 Confluence 使用默认（纯文本）
+          return "";
+        }
+      );
+      return open + sanitizedInner + close;
+    }
+  );
 }
 
 /**
@@ -1484,6 +1512,21 @@ function getToolsList() {
           required: ["mermaidCode", "pageId"],
         },
       },
+      {
+        name: "confluence_fix_code_macros",
+        description:
+          "修复 Confluence (KMS) 页面中代码宏的 InvalidValueException 错误。自动扫描页面内容，将无效的 language 参数归一化或移除，然后更新页面。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            pageId: {
+              type: "string",
+              description: "要修复的页面 ID",
+            },
+          },
+          required: ["pageId"],
+        },
+      },
     ],
   };
 }
@@ -2040,6 +2083,38 @@ async function handleToolCall(request: CallToolRequest) {
                 `渲染URL: ${mermaidUrl}\n` +
                 (args.embedInPage ? `已嵌入页面\n` : "") +
                 `\n嵌入页面的宏代码:\n${imageHtml}`,
+            },
+          ],
+        };
+      }
+
+      case "confluence_fix_code_macros": {
+        if (!args.pageId) throw new Error("必须提供 pageId");
+
+        const page = await getPageById(String(args.pageId));
+        const originalBody = page.body?.storage?.value || "";
+        const fixedBody = sanitizeCodeMacros(originalBody);
+
+        if (fixedBody === originalBody) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `页面 ${page.title} (ID: ${page.id}) 中未发现需要修复的代码宏 language 参数。`,
+              },
+            ],
+          };
+        }
+
+        await updatePage(page, fixedBody);
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `✅ 页面代码宏已修复！\n\n` +
+                `页面: ${page.title} (ID: ${page.id})\n` +
+                `URL: ${CONF_BASE_URL}${page._links.webui}`,
             },
           ],
         };
