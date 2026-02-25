@@ -616,6 +616,32 @@ async function uploadAttachmentToPage({
   };
 }
 
+// ===== Mermaid 渲染 =====
+
+async function renderMermaidToImage(
+  mermaidCode: string,
+  options?: { theme?: string; bgColor?: string; width?: number; height?: number }
+): Promise<{ imageBuffer: ArrayBuffer; url: string }> {
+  const baseUrl = process.env.MERMAID_INK_URL || "https://mermaid.ink";
+  const encoded = Buffer.from(mermaidCode).toString("base64");
+
+  let imgUrl = `${baseUrl}/img/${encoded}`;
+  const params = new URLSearchParams();
+  if (options?.theme) params.set("theme", options.theme);
+  if (options?.bgColor) params.set("bgColor", options.bgColor);
+  if (options?.width) params.set("width", String(options.width));
+  if (options?.height) params.set("height", String(options.height));
+  const qs = params.toString();
+  if (qs) imgUrl += `?${qs}`;
+
+  const res = await fetch(imgUrl);
+  if (!res.ok) {
+    throw new Error(`Mermaid 渲染失败: HTTP ${res.status} ${res.statusText}`);
+  }
+
+  return { imageBuffer: await res.arrayBuffer(), url: imgUrl };
+}
+
 // ===== Confluence/KMS 宏（macro）辅助 =====
 
 /**
@@ -760,6 +786,13 @@ type CallToolArgs = Record<string, unknown> & {
   sourcePageId?: string;
   targetSpace?: string;
   copyAttachments?: boolean;
+  // mermaid
+  mermaidCode?: string;
+  embedInPage?: boolean;
+  theme?: string;
+  bgColor?: string;
+  width?: number;
+  height?: number;
 };
 
 type CallToolRequestParams = {
@@ -1405,6 +1438,52 @@ function getToolsList() {
           required: ["sourcePageId", "newTitle"],
         },
       },
+      {
+        name: "confluence_render_mermaid",
+        description:
+          "将 Mermaid 图表文本渲染为 PNG 图片，上传为 Confluence (KMS) 页面附件，并可选嵌入页面内容。通过 mermaid.ink 在线服务渲染，支持自建服务（环境变量 MERMAID_INK_URL）。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            mermaidCode: {
+              type: "string",
+              description: "Mermaid 图表文本，例如 'graph TD; A-->B;'",
+            },
+            pageId: {
+              type: "string",
+              description: "要上传附件的页面 ID",
+            },
+            filename: {
+              type: "string",
+              description: "附件文件名（默认 mermaid-diagram.png）",
+              default: "mermaid-diagram.png",
+            },
+            theme: {
+              type: "string",
+              description: "Mermaid 主题",
+              enum: ["default", "forest", "dark", "neutral"],
+            },
+            bgColor: {
+              type: "string",
+              description: "背景色，例如 'white'、'!white'（透明背景加 ! 前缀）",
+            },
+            width: {
+              type: "number",
+              description: "图片宽度（像素）",
+            },
+            height: {
+              type: "number",
+              description: "图片高度（像素）",
+            },
+            embedInPage: {
+              type: "boolean",
+              description: "是否自动将图片嵌入页面末尾（默认 false）",
+              default: false,
+            },
+          },
+          required: ["mermaidCode", "pageId"],
+        },
+      },
     ],
   };
 }
@@ -1908,6 +1987,59 @@ async function handleToolCall(request: CallToolRequest) {
                 `新页面: ${newPage.title} (ID: ${newPage.id})\n` +
                 `URL: ${CONF_BASE_URL}${newPage._links.webui}` +
                 attachmentMsg,
+            },
+          ],
+        };
+      }
+
+      case "confluence_render_mermaid": {
+        if (!args.mermaidCode) throw new Error("必须提供 mermaidCode");
+        if (!args.pageId) throw new Error("必须提供 pageId");
+
+        const fileName = (args.filename as string) || "mermaid-diagram.png";
+
+        // 1. 渲染 Mermaid 为 PNG
+        const { imageBuffer, url: mermaidUrl } = await renderMermaidToImage(
+          String(args.mermaidCode),
+          {
+            theme: (args.theme as string | undefined) ?? undefined,
+            bgColor: (args.bgColor as string | undefined) ?? undefined,
+            width: (args.width as number | undefined) ?? undefined,
+            height: (args.height as number | undefined) ?? undefined,
+          }
+        );
+
+        // 2. 上传附件
+        const uploadResult = await uploadAttachmentToPage({
+          pageId: String(args.pageId),
+          fileName,
+          fileArrayBuffer: imageBuffer,
+          comment: "Mermaid diagram rendered via mermaid.ink",
+        });
+
+        const imageHtml = `<ac:image><ri:attachment ri:filename="${fileName}" /></ac:image>`;
+
+        // 3. 如果需要嵌入页面
+        if (args.embedInPage === true) {
+          const page = await getPageById(String(args.pageId));
+          const currentBody = page.body?.storage?.value || "";
+          const newBody = currentBody + imageHtml;
+          await updatePage(page, newBody);
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `✅ Mermaid 图表渲染并上传成功！\n\n` +
+                `页面ID: ${String(args.pageId)}\n` +
+                (uploadResult.id ? `附件ID: ${uploadResult.id}\n` : "") +
+                `文件名: ${fileName}\n` +
+                (uploadResult.download ? `下载: ${uploadResult.download}\n` : "") +
+                `渲染URL: ${mermaidUrl}\n` +
+                (args.embedInPage ? `已嵌入页面\n` : "") +
+                `\n嵌入页面的宏代码:\n${imageHtml}`,
             },
           ],
         };
