@@ -623,9 +623,14 @@ async function renderMermaidToImage(
   options?: { theme?: string; bgColor?: string; width?: number; height?: number }
 ): Promise<{ imageBuffer: ArrayBuffer; url: string }> {
   const baseUrl = process.env.MERMAID_INK_URL || "https://mermaid.ink";
-  const encoded = Buffer.from(mermaidCode).toString("base64");
 
-  let imgUrl = `${baseUrl}/img/${encoded}`;
+  // 确保正确处理 UTF-8 编码的中文字符
+  const encoded = Buffer.from(mermaidCode, "utf8").toString("base64");
+
+  // URL 安全的 base64 编码（替换 URL 中不安全的字符）
+  const urlSafeEncoded = encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+
+  let imgUrl = `${baseUrl}/img/${urlSafeEncoded}`;
   const params = new URLSearchParams();
   if (options?.theme) params.set("theme", options.theme);
   if (options?.bgColor) params.set("bgColor", options.bgColor);
@@ -636,7 +641,16 @@ async function renderMermaidToImage(
 
   const res = await fetch(imgUrl);
   if (!res.ok) {
-    throw new Error(`Mermaid 渲染失败: HTTP ${res.status} ${res.statusText}`);
+    // 如果URL安全编码失败，尝试使用原始base64编码（但进行URL编码）
+    if (urlSafeEncoded !== encoded) {
+      console.warn(`Mermaid 渲染失败，尝试使用原始编码: HTTP ${res.status}`);
+      const fallbackUrl = `${baseUrl}/img/${encodeURIComponent(encoded)}${qs ? `?${qs}` : ''}`;
+      const fallbackRes = await fetch(fallbackUrl);
+      if (fallbackRes.ok) {
+        return { imageBuffer: await fallbackRes.arrayBuffer(), url: fallbackUrl };
+      }
+    }
+    throw new Error(`Mermaid 渲染失败: HTTP ${res.status} ${res.statusText}。可能是包含了不支持的字符或语法错误。`);
   }
 
   return { imageBuffer: await res.arrayBuffer(), url: imgUrl };
