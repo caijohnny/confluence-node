@@ -10,6 +10,7 @@ import { createServer } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 dotenv.config();
 const { CONF_BASE_URL, CONF_USERNAME, CONF_PASSWORD, CONF_SPACE, CONF_TOKEN } = process.env;
 // 判断是否使用 PAT (Personal Access Token) 认证
@@ -1081,6 +1082,28 @@ function getToolsList() {
                 },
             },
             {
+                name: "confluence_download_attachment",
+                description: "下载 Confluence (KMS) 页面的附件到本地。默认保存到用户的下载目录。",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        downloadUrl: {
+                            type: "string",
+                            description: "附件的下载 URL（可以从 confluence_get_page_attachments 获取）",
+                        },
+                        filename: {
+                            type: "string",
+                            description: "保存的文件名（可选，如果不提供则从 URL 中提取）",
+                        },
+                        outputDir: {
+                            type: "string",
+                            description: "保存目录（可选，默认为用户的下载目录）",
+                        },
+                    },
+                    required: ["downloadUrl"],
+                },
+            },
+            {
                 name: "confluence_build_code_macro",
                 description: "生成 Confluence (KMS) 的代码宏（storage format HTML），用于安全插入代码块，避免 InvalidValueException 错误。",
                 inputSchema: {
@@ -1576,6 +1599,43 @@ async function handleToolCall(request) {
                                 (result.title ? `文件名: ${result.title}\n` : "") +
                                 (result.download ? `下载: ${result.download}\n` : "") +
                                 (result.webui ? `页面: ${result.webui}\n` : ""),
+                        },
+                    ],
+                };
+            }
+            case "confluence_download_attachment": {
+                if (!args.downloadUrl)
+                    throw new Error("必须提供 downloadUrl");
+                const downloadUrl = String(args.downloadUrl);
+                // 确定文件名
+                let filename = args.filename;
+                if (!filename) {
+                    // 从 URL 中提取文件名
+                    const urlParts = downloadUrl.split("/");
+                    filename = urlParts[urlParts.length - 1] || "attachment";
+                    // 解码 URL 编码的文件名
+                    filename = decodeURIComponent(filename);
+                }
+                // 确定保存目录
+                const outputDir = args.outputDir || path.join(os.homedir(), "Downloads");
+                // 确保目录存在
+                if (!fs.existsSync(outputDir)) {
+                    fs.mkdirSync(outputDir, { recursive: true });
+                }
+                // 完整的文件路径
+                const filePath = path.join(outputDir, filename);
+                // 下载附件
+                const arrayBuffer = await downloadAttachment(downloadUrl);
+                // 保存到文件
+                fs.writeFileSync(filePath, Buffer.from(arrayBuffer));
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `✅ 附件下载成功！\n\n` +
+                                `文件名: ${filename}\n` +
+                                `保存路径: ${filePath}\n` +
+                                `文件大小: ${(arrayBuffer.byteLength / 1024).toFixed(2)} KB`,
                         },
                     ],
                 };
