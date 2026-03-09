@@ -1,0 +1,23 @@
+src/mcp-server.ts
+  5e35a55a4cc96a74 14,1378-1399,1947-1992
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "192eb1321fef8c6a9799f3eefc8ceff03d78ea1a",
+  "prompts": {
+    "5e35a55a4cc96a74": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bcbe58eb-e85c-4087-895a-f8e695b97e12",
+        "model": "claude-sonnet-4-5-20250929"
+      },
+      "human_author": "johntsai <johntsai@fanruan.com>",
+      "messages": [],
+      "total_additions": 70,
+      "total_deletions": 0,
+      "accepted_lines": 70,
+      "overriden_lines": 0
+    }
+  }
+}
