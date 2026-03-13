@@ -1686,6 +1686,32 @@ function getToolsList() {
         },
       },
       {
+        name: "confluence_move_page",
+        description:
+          "将 Confluence (KMS) 页面移动到另一个页面下（成为目标页面的子页面），或移动到目标页面的前面/后面（成为同级页面）。KMS 是公司内部 Confluence 系统的别名。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            pageId: {
+              type: "string",
+              description: "要移动的页面 ID",
+            },
+            targetPageId: {
+              type: "string",
+              description: "目标页面 ID",
+            },
+            position: {
+              type: "string",
+              enum: ["append", "above", "below"],
+              description:
+                "移动位置：append=成为目标页面的子页面（追加到末尾），above=移动到目标页面前面（同级），below=移动到目标页面后面（同级）。默认 append。",
+              default: "append",
+            },
+          },
+          required: ["pageId", "targetPageId"],
+        },
+      },
+      {
         name: "confluence_sort_child_pages",
         description:
           "对 Confluence (KMS) 父页面下的子页面进行排序。支持按标题字母排序或按自定义顺序排序。",
@@ -2351,6 +2377,35 @@ async function handleToolCall(request: CallToolRequest) {
                 `✅ 页面代码宏已修复！\n\n` +
                 `页面: ${page.title} (ID: ${page.id})\n` +
                 `URL: ${CONF_BASE_URL}${page._links.webui}`,
+            },
+          ],
+        };
+      }
+
+      case "confluence_move_page": {
+        if (!args.pageId) throw new Error("必须提供 pageId");
+        if (!args.targetPageId) throw new Error("必须提供 targetPageId");
+
+        const position = (args.position as "append" | "above" | "below") || "append";
+
+        await movePage(
+          String(args.pageId),
+          position,
+          String(args.targetPageId)
+        );
+
+        const positionDesc =
+          position === "append"
+            ? `目标页面 ${args.targetPageId} 的子页面`
+            : position === "above"
+              ? `目标页面 ${args.targetPageId} 的前面`
+              : `目标页面 ${args.targetPageId} 的后面`;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `✅ 页面 ${args.pageId} 已成功移动到${positionDesc}。`,
             },
           ],
         };
