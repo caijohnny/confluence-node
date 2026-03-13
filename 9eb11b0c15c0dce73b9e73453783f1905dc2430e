@@ -1,0 +1,23 @@
+src/mcp-server.ts
+  9fe6cbf42495163b 63-73,252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.10",
+  "base_commit_sha": "9eb11b0c15c0dce73b9e73453783f1905dc2430e",
+  "prompts": {
+    "9fe6cbf42495163b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3a0a7d8-3759-481a-9256-e722ebd897da",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "johntsai <johntsai@fanruan.com>",
+      "messages": [],
+      "total_additions": 12,
+      "total_deletions": 11,
+      "accepted_lines": 12,
+      "overriden_lines": 0
+    }
+  }
+}
