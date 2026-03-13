@@ -60,6 +60,17 @@ const api = axios.create({
   maxBodyLength: Infinity,
 });
 
+const experimentalApi = axios.create({
+  baseURL: `${CONF_BASE_URL}/rest/experimental`,
+  ...authConfig,
+  headers: {
+    "Content-Type": "application/json",
+    ...authConfig.headers,
+  },
+  maxContentLength: Infinity,
+  maxBodyLength: Infinity,
+});
+
 type ConfluencePage = {
   id: string;
   title: string;
@@ -238,7 +249,7 @@ async function getChildPages(parentId: string, limit = 50): Promise<ConfluencePa
 }
 
 async function movePage(pageId: string, position: "before" | "after" | "append", targetId: string): Promise<void> {
-  await api.put(`/content/${pageId}/move/${position}/${targetId}`);
+  await experimentalApi.put(`/content/${pageId}/move/${position}/${targetId}`);
 }
 
 async function sortChildPages(
@@ -386,16 +397,6 @@ async function setPageRestriction({
   if (!targetUser && restrictionType !== "none") {
     throw new Error("设置权限需要指定用户名或配置 CONF_USERNAME 环境变量");
   }
-
-  // 创建一个使用 experimental API 的 axios 实例
-  const experimentalApi = axios.create({
-    baseURL: `${CONF_BASE_URL}/rest/experimental`,
-    ...authConfig,
-    headers: {
-      "Content-Type": "application/json",
-      ...authConfig.headers,
-    },
-  });
 
   try {
     if (restrictionType === "none") {

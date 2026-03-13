@@ -52,6 +52,16 @@ const api = axios.create({
     maxContentLength: Infinity,
     maxBodyLength: Infinity,
 });
+const experimentalApi = axios.create({
+    baseURL: `${CONF_BASE_URL}/rest/experimental`,
+    ...authConfig,
+    headers: {
+        "Content-Type": "application/json",
+        ...authConfig.headers,
+    },
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+});
 // ===== Confluence API 函数 =====
 async function getPage(space, title) {
     try {
@@ -190,7 +200,7 @@ async function getChildPages(parentId, limit = 50) {
     }
 }
 async function movePage(pageId, position, targetId) {
-    await api.put(`/content/${pageId}/move/${position}/${targetId}`);
+    await experimentalApi.put(`/content/${pageId}/move/${position}/${targetId}`);
 }
 async function sortChildPages(parentId, sortBy = "title", order = "asc", pageIds) {
     const children = await getChildPages(parentId);
@@ -291,15 +301,6 @@ async function setPageRestriction({ pageId, restrictionType, username, }) {
     if (!targetUser && restrictionType !== "none") {
         throw new Error("设置权限需要指定用户名或配置 CONF_USERNAME 环境变量");
     }
-    // 创建一个使用 experimental API 的 axios 实例
-    const experimentalApi = axios.create({
-        baseURL: `${CONF_BASE_URL}/rest/experimental`,
-        ...authConfig,
-        headers: {
-            "Content-Type": "application/json",
-            ...authConfig.headers,
-        },
-    });
     try {
         if (restrictionType === "none") {
             // 删除所有限制 - 无限制
