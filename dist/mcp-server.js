@@ -200,7 +200,14 @@ async function getChildPages(parentId, limit = 50) {
     }
 }
 async function movePage(pageId, position, targetId) {
-    await experimentalApi.put(`/content/${pageId}/move/${position}/${targetId}`);
+    // Confluence Server 没有 REST move API，使用 JSON-RPC API
+    await axios.post(`${CONF_BASE_URL}/rpc/json-rpc/confluenceservice-v2/movePage`, [pageId, targetId, position], {
+        ...authConfig,
+        headers: {
+            "Content-Type": "application/json",
+            ...authConfig.headers,
+        },
+    });
 }
 async function sortChildPages(parentId, sortBy = "title", order = "asc", pageIds) {
     const children = await getChildPages(parentId);
@@ -228,13 +235,13 @@ async function sortChildPages(parentId, sortBy = "title", order = "asc", pageIds
             return order === "desc" ? -cmp : cmp;
         });
     }
-    // 逐个移动页面：第一个 append 到父页面，后续 after 前一个
+    // 逐个移动页面：第一个 append 到父页面，后续 below 前一个
     for (let i = 0; i < sorted.length; i++) {
         if (i === 0) {
             await movePage(sorted[i].id, "append", parentId);
         }
         else {
-            await movePage(sorted[i].id, "after", sorted[i - 1].id);
+            await movePage(sorted[i].id, "below", sorted[i - 1].id);
         }
     }
     return {
