@@ -189,6 +189,48 @@ async function getChildPages(parentId, limit = 50) {
         throw new Error(`获取子页面失败: ${message}`);
     }
 }
+async function movePage(pageId, position, targetId) {
+    await api.put(`/content/${pageId}/move/${position}/${targetId}`);
+}
+async function sortChildPages(parentId, sortBy = "title", order = "asc", pageIds) {
+    const children = await getChildPages(parentId);
+    let sorted;
+    if (sortBy === "custom") {
+        if (!pageIds || pageIds.length === 0) {
+            throw new Error("custom 排序模式下必须提供 pageIds 参数");
+        }
+        const childMap = new Map(children.map((p) => [p.id, p]));
+        const unknownIds = pageIds.filter((id) => !childMap.has(id));
+        if (unknownIds.length > 0) {
+            throw new Error(`以下 pageIds 不是父页面 ${parentId} 的子页面: ${unknownIds.join(", ")}`);
+        }
+        sorted = pageIds.map((id) => childMap.get(id));
+        // 将未在 pageIds 中指定的子页面追加到末尾
+        for (const child of children) {
+            if (!pageIds.includes(child.id)) {
+                sorted.push(child);
+            }
+        }
+    }
+    else {
+        sorted = [...children].sort((a, b) => {
+            const cmp = a.title.localeCompare(b.title, "zh-Hans");
+            return order === "desc" ? -cmp : cmp;
+        });
+    }
+    // 逐个移动页面：第一个 append 到父页面，后续 after 前一个
+    for (let i = 0; i < sorted.length; i++) {
+        if (i === 0) {
+            await movePage(sorted[i].id, "append", parentId);
+        }
+        else {
+            await movePage(sorted[i].id, "after", sorted[i - 1].id);
+        }
+    }
+    return {
+        sorted: sorted.map((p) => ({ id: p.id, title: p.title })),
+    };
+}
 async function getPageHistory(pageId, limit = 10) {
     try {
         const res = await api.get(`/content/${pageId}/history`, {
@@ -1322,6 +1364,37 @@ function getToolsList() {
                     required: ["pageId"],
                 },
             },
+            {
+                name: "confluence_sort_child_pages",
+                description: "对 Confluence (KMS) 父页面下的子页面进行排序。支持按标题字母排序或按自定义顺序排序。",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        parentId: {
+                            type: "string",
+                            description: "父页面 ID",
+                        },
+                        sortBy: {
+                            type: "string",
+                            enum: ["title", "custom"],
+                            description: "排序方式：title=按标题字母排序，custom=按自定义顺序排序",
+                            default: "title",
+                        },
+                        order: {
+                            type: "string",
+                            enum: ["asc", "desc"],
+                            description: "排序方向（仅 sortBy=title 时有效），默认 asc",
+                            default: "asc",
+                        },
+                        pageIds: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "自定义排序的页面 ID 列表（仅 sortBy=custom 时必填），按此顺序排列",
+                        },
+                    },
+                    required: ["parentId"],
+                },
+            },
         ],
     };
 }
@@ -1873,6 +1946,27 @@ async function handleToolCall(request) {
                             text: `✅ 页面代码宏已修复！\n\n` +
                                 `页面: ${page.title} (ID: ${page.id})\n` +
                                 `URL: ${CONF_BASE_URL}${page._links.webui}`,
+                        },
+                    ],
+                };
+            }
+            case "confluence_sort_child_pages": {
+                if (!args.parentId)
+                    throw new Error("必须提供 parentId");
+                const sortBy = args.sortBy || "title";
+                const order = args.order || "asc";
+                const pageIds = args.pageIds;
+                const result = await sortChildPages(String(args.parentId), sortBy, order, pageIds);
+                const listing = result.sorted
+                    .map((p, i) => `${i + 1}. ${p.title} (ID: ${p.id})`)
+                    .join("\n");
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `✅ 子页面排序完成！共 ${result.sorted.length} 个页面。\n\n` +
+                                `排序方式: ${sortBy === "title" ? `按标题${order === "desc" ? "降序" : "升序"}` : "自定义顺序"}\n\n` +
+                                `排序结果:\n${listing}`,
                         },
                     ],
                 };
