@@ -331,6 +331,7 @@ type PageVersionInfo = {
 
 /**
  * 获取页面的所有版本列表（含版本号、作者、时间、版本备注等）
+ * 通过逐个请求历史版本实现，兼容 Confluence Server
  */
 async function getPageVersions(
   pageId: string,
@@ -338,38 +339,60 @@ async function getPageVersions(
   start = 0
 ): Promise<{ versions: Array<PageVersionInfo & { versionUrl: string }>; totalCount: number; pageTitle: string }> {
   try {
-    // 先获取页面基本信息（当前版本号 + 标题）
+    // 获取页面基本信息（当前版本号 + 标题）
     const pageRes = await api.get<ConfluencePage>(`/content/${pageId}`, {
       params: { expand: "version" },
     });
     const page = pageRes.data;
     const currentVersion = page.version.number;
     const pageTitle = page.title;
+    const totalCount = currentVersion;
 
-    // 获取版本列表
-    const res = await api.get(`/content/${pageId}/version`, {
-      params: { limit, start, expand: "content" },
+    // 计算需要获取的版本范围（从最新往回取）
+    const endVersion = Math.max(currentVersion - start, 1);
+    const startVersion = Math.max(endVersion - limit + 1, 1);
+
+    // 并发获取各版本的信息
+    const versionNumbers: number[] = [];
+    for (let v = endVersion; v >= startVersion; v--) {
+      versionNumbers.push(v);
+    }
+
+    type VersionEntry = PageVersionInfo & { versionUrl: string };
+
+    const versionPromises = versionNumbers.map(async (vNum): Promise<VersionEntry | null> => {
+      try {
+        const res = await api.get(`/content/${pageId}`, {
+          params: {
+            expand: "version",
+            version: vNum,
+          },
+        });
+        const data = res.data;
+        return {
+          number: data.version.number as number,
+          by: {
+            displayName: data.version.by?.displayName,
+            username: data.version.by?.username,
+          },
+          when: data.version.when as string,
+          message: (data.version.message as string) || "",
+          minorEdit: (data.version.minorEdit as boolean) ?? false,
+          versionUrl:
+            vNum === currentVersion
+              ? `${CONF_BASE_URL}/pages/viewpage.action?pageId=${pageId}`
+              : `${CONF_BASE_URL}/pages/viewpage.action?pageId=${pageId}&pageVersion=${vNum}`,
+        };
+      } catch {
+        return null;
+      }
     });
 
-    const results: PageVersionInfo[] = res.data.results ?? [];
-    const totalCount: number = res.data.size ?? results.length;
+    const results = (await Promise.all(versionPromises)).filter(
+      (v): v is VersionEntry => v !== null
+    );
 
-    const versions = results.map((v: PageVersionInfo) => ({
-      number: v.number,
-      by: {
-        displayName: v.by?.displayName,
-        username: v.by?.username,
-      },
-      when: v.when,
-      message: v.message || "",
-      minorEdit: v.minorEdit,
-      versionUrl:
-        v.number === currentVersion
-          ? `${CONF_BASE_URL}/pages/viewpage.action?pageId=${pageId}`
-          : `${CONF_BASE_URL}/pages/viewpage.action?pageId=${pageId}&pageVersion=${v.number}`,
-    }));
-
-    return { versions, totalCount, pageTitle };
+    return { versions: results, totalCount, pageTitle };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`获取页面版本列表失败: ${message}`);
@@ -396,7 +419,6 @@ async function getPageVersionDetail(
     const res = await api.get(`/content/${pageId}`, {
       params: {
         expand: "body.storage,version,space",
-        status: "historical",
         version: versionNumber,
       },
     });
