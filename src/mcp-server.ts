@@ -321,6 +321,106 @@ async function getPageHistory(pageId: string, limit = 10): Promise<unknown> {
   }
 }
 
+type PageVersionInfo = {
+  number: number;
+  by: { displayName?: string; username?: string };
+  when: string;
+  message?: string;
+  minorEdit: boolean;
+};
+
+/**
+ * 获取页面的所有版本列表（含版本号、作者、时间、版本备注等）
+ */
+async function getPageVersions(
+  pageId: string,
+  limit = 20,
+  start = 0
+): Promise<{ versions: Array<PageVersionInfo & { versionUrl: string }>; totalCount: number; pageTitle: string }> {
+  try {
+    // 先获取页面基本信息（当前版本号 + 标题）
+    const pageRes = await api.get<ConfluencePage>(`/content/${pageId}`, {
+      params: { expand: "version" },
+    });
+    const page = pageRes.data;
+    const currentVersion = page.version.number;
+    const pageTitle = page.title;
+
+    // 获取版本列表
+    const res = await api.get(`/content/${pageId}/version`, {
+      params: { limit, start, expand: "content" },
+    });
+
+    const results: PageVersionInfo[] = res.data.results ?? [];
+    const totalCount: number = res.data.size ?? results.length;
+
+    const versions = results.map((v: PageVersionInfo) => ({
+      number: v.number,
+      by: {
+        displayName: v.by?.displayName,
+        username: v.by?.username,
+      },
+      when: v.when,
+      message: v.message || "",
+      minorEdit: v.minorEdit,
+      versionUrl:
+        v.number === currentVersion
+          ? `${CONF_BASE_URL}/pages/viewpage.action?pageId=${pageId}`
+          : `${CONF_BASE_URL}/pages/viewpage.action?pageId=${pageId}&pageVersion=${v.number}`,
+    }));
+
+    return { versions, totalCount, pageTitle };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`获取页面版本列表失败: ${message}`);
+  }
+}
+
+/**
+ * 获取页面某个特定版本的详细内容
+ */
+async function getPageVersionDetail(
+  pageId: string,
+  versionNumber: number
+): Promise<{
+  pageId: string;
+  title: string;
+  versionNumber: number;
+  by: { displayName?: string; username?: string };
+  when: string;
+  message: string;
+  content: string;
+  versionUrl: string;
+}> {
+  try {
+    const res = await api.get(`/content/${pageId}`, {
+      params: {
+        expand: "body.storage,version,space",
+        status: "historical",
+        version: versionNumber,
+      },
+    });
+
+    const data = res.data;
+    return {
+      pageId: data.id,
+      title: data.title,
+      versionNumber: data.version.number,
+      by: {
+        displayName: data.version.by?.displayName,
+        username: data.version.by?.username,
+      },
+      when: data.version.when,
+      message: data.version.message || "",
+      content: data.body?.storage?.value || "",
+      versionUrl: `${CONF_BASE_URL}/pages/viewpage.action?pageId=${pageId}&pageVersion=${versionNumber}`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`获取页面版本详情失败: ${message}`);
+  }
+}
+
 async function getPageComments(pageId: string, limit = 50): Promise<ConfluenceComment[]> {
   try {
     const res = await api.get<{ results: ConfluenceComment[] }>(`/content/${pageId}/child/comment`, {
@@ -1743,6 +1843,50 @@ function getToolsList() {
           required: ["parentId"],
         },
       },
+      {
+        name: "confluence_get_page_versions",
+        description:
+          "获取 Confluence (KMS) 页面的版本列表，包含每个版本的版本号、作者、修改时间、版本备注以及对应的版本链接。KMS 是公司内部 Confluence 系统的别名。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            pageId: {
+              type: "string",
+              description: "页面 ID",
+            },
+            limit: {
+              type: "number",
+              description: "返回版本数量，默认 20",
+              default: 20,
+            },
+            start: {
+              type: "number",
+              description: "分页起始位置，默认 0",
+              default: 0,
+            },
+          },
+          required: ["pageId"],
+        },
+      },
+      {
+        name: "confluence_get_page_version_detail",
+        description:
+          "获取 Confluence (KMS) 页面某个特定版本的详细内容，包括该版本的正文内容、作者、修改时间和版本链接。KMS 是公司内部 Confluence 系统的别名。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            pageId: {
+              type: "string",
+              description: "页面 ID",
+            },
+            versionNumber: {
+              type: "number",
+              description: "版本号",
+            },
+          },
+          required: ["pageId", "versionNumber"],
+        },
+      },
     ],
   };
 }
@@ -2437,6 +2581,61 @@ async function handleToolCall(request: CallToolRequest) {
                 `✅ 子页面排序完成！共 ${result.sorted.length} 个页面。\n\n` +
                 `排序方式: ${sortBy === "title" ? `按标题${order === "desc" ? "降序" : "升序"}` : "自定义顺序"}\n\n` +
                 `排序结果:\n${listing}`,
+            },
+          ],
+        };
+      }
+
+      case "confluence_get_page_versions": {
+        if (!CONF_BASE_URL) throw new Error("缺少环境变量 CONF_BASE_URL");
+        if (!args.pageId) throw new Error("必须提供 pageId");
+
+        const versionsResult = await getPageVersions(
+          String(args.pageId),
+          (args.limit as number) || 20,
+          (args.start as number) || 0
+        );
+
+        const versionListing = versionsResult.versions
+          .map(
+            (v) =>
+              `v${v.number} | ${v.by.displayName || v.by.username || "未知"} | ${v.when}${v.message ? ` | ${v.message}` : ""}${v.minorEdit ? " (小修改)" : ""}\n   链接: ${v.versionUrl}`
+          )
+          .join("\n");
+
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `📋 页面「${versionsResult.pageTitle}」版本列表（共 ${versionsResult.totalCount} 个版本）\n\n` +
+                versionListing,
+            },
+          ],
+        };
+      }
+
+      case "confluence_get_page_version_detail": {
+        if (!CONF_BASE_URL) throw new Error("缺少环境变量 CONF_BASE_URL");
+        if (!args.pageId) throw new Error("必须提供 pageId");
+        if (!args.versionNumber) throw new Error("必须提供 versionNumber");
+
+        const detail = await getPageVersionDetail(
+          String(args.pageId),
+          Number(args.versionNumber)
+        );
+
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `📄 页面「${detail.title}」版本 ${detail.versionNumber} 详情\n\n` +
+                `作者: ${detail.by.displayName || detail.by.username || "未知"}\n` +
+                `时间: ${detail.when}\n` +
+                `备注: ${detail.message || "无"}\n` +
+                `链接: ${detail.versionUrl}\n\n` +
+                `--- 内容 ---\n${detail.content}`,
             },
           ],
         };
